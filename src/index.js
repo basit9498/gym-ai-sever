@@ -19,6 +19,15 @@ const walletRoutes = require('./routes/walletRoutes');
 const userRoutes = require('./routes/userRoutes');
 const { notFound, errorHandler } = require('./middleware/error');
 
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'ok', 
+    message: 'Gym Arc Circle Server is healthy',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Mount routes
 app.use('/api/general', generalRoutes);
 app.use('/api/auth', authRoutes);
