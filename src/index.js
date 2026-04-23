@@ -51,7 +51,7 @@ app.use("/api/users", userRoutes);
 app.use(notFound);
 app.use(errorHandler);
 
-app.listen(5001, () => {
-  dbConfig();
+app.listen(5001, async() => {
+  await dbConfig();
   console.log("Server is running on port 5001");
 });
