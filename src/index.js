@@ -21,12 +21,21 @@ const { notFound, errorHandler } = require("./middleware/error");
 
 // Health check endpoint
 app.get("/api/health", async (req, res) => {
+ try{
   await dbConfig();
   res.status(200).json({
     status: "ok",
     message: "Gym Arc Circle Server is healthy",
     timestamp: new Date().toISOString(),
   });
+ }catch(error){
+  console.log(error);
+  res.status(500).json({
+    status: "error",
+    message: "Gym Arc Circle Server is not healthy",
+    timestamp: new Date().toISOString(),
+  });
+ }
 });
 
 // Mount routes
