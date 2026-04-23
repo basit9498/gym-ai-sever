@@ -21,6 +21,7 @@ const { notFound, errorHandler } = require("./middleware/error");
 
 // Health check endpoint
 app.get("/api/health", (req, res) => {
+  dbConfig();
   res.status(200).json({
     status: "ok",
     message: "Gym Arc Circle Server is healthy",
