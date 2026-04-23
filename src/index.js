@@ -20,8 +20,8 @@ const userRoutes = require("./routes/userRoutes");
 const { notFound, errorHandler } = require("./middleware/error");
 
 // Health check endpoint
-app.get("/api/health", (req, res) => {
-  dbConfig();
+app.get("/api/health", async (req, res) => {
+  await dbConfig();
   res.status(200).json({
     status: "ok",
     message: "Gym Arc Circle Server is healthy",
