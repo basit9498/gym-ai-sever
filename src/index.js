@@ -8,6 +8,20 @@ const cors = require("cors");
 app.use(cors());
 app.use(express.json()); // Allow parsing of JSON request bodies
 
+// Add global middleware to ensure DB is connected
+app.use(async (req, res, next) => {
+  try {
+    await dbConfig();
+    next();
+  } catch (error) {
+    res.status(500).json({ error: "Database connection failed" });
+  }
+});
+
+// Call dbConfig at startup (works for local and server-based, 
+// middleware above covers serverless cases)
+dbConfig().catch(err => console.error("Initial DB connection failed:", err));
+
 // Route imports
 const authRoutes = require("./routes/authRoutes");
 const chatRoutes = require("./routes/chatRoutes");
