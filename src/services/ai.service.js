@@ -6,9 +6,12 @@ const UserProfileMemory = require("../models/UserProfileMemory");
 
 function getLLM() {
   if (process.env.GROQ_API_KEY) {
-    return new ChatGroq({ apiKey: process.env.GROQ_API_KEY, model: "openai/gpt-oss-120b"});
+    return new ChatGroq({ 
+      apiKey: process.env.GROQ_API_KEY, 
+      model: "openai/gpt-oss-120b",
+      maxTokens: 4096 
+    });
   }
-  // return new ChatGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY || "mock", modelName: "gemini-3.1-flash-live-preview", maxOutputTokens: 4096 });
 }
 
 // Advanced State for LangGraph
@@ -52,8 +55,8 @@ function heuristicWantsWorkoutPlan(text) {
 
 function heuristicWantsMealPlan(text) {
   const t = String(text || '').toLowerCase();
-  const action = /\b(create|build|generate|make|design|draft|give me|i need|i want|help me with|can you|set up|put together|want a|need a|looking for)\b/.test(t);
-  const topic = /\b(meal plan|nutrition plan|diet plan|macros?|meal prep|eating plan|food plan|calories|what (should|to) i eat)\b/.test(t);
+  const action = /\b(create|build|generate|make|design|draft|give me|i need|i want|help me|can you|set up|put together|want a|need a|looking for)\b/.test(t);
+  const topic = /\b(meal|nutrition|diet|macros?|meal prep|eating|food|calories|what (should|to) i eat|snack)\b/.test(t);
   return action && topic;
 }
 
@@ -71,7 +74,27 @@ function inferGymAccessFromMessage(text) {
 function inferAllergiesFromShortMessage(text) {
   const t = String(text || '').trim().toLowerCase();
   if (!t || t.length > 80) return undefined;
-  if (/^(none|no|n\/a|nothing|no allergies|no thanks)(\s|\.|!)*$/i.test(t)) return [];
+  if (/^(none|no|n\/a|nothing|no allergies|no thanks|clear)(\s|\.|!)*$/i.test(t)) return [];
+  return undefined;
+}
+
+function inferWeightFromMessage(text, lastAiContent = '') {
+  const t = String(text || '').trim().toLowerCase();
+  if (!t || t.length > 20) return undefined;
+  
+  // If AI just asked for weight, a number is almost certainly weight
+  const aiAskedWeight = /\b(weight|how much do you weigh)\b/i.test(lastAiContent);
+  
+  // Match things like "77", "77kg", "77.5", "77.5 kg", "170 lbs"
+  const match = t.match(/^(\d+(\.\d+)?)\s*(kg|lbs|pounds)?$/);
+  if (match) {
+    let val = parseFloat(match[1]);
+    const unit = match[3];
+    if (unit === 'lbs' || unit === 'pounds') {
+       val = Math.round(val * 0.453592); // Store in kg
+    }
+    if (val > 20 && val < 400) return val;
+  }
   return undefined;
 }
 
@@ -124,7 +147,7 @@ function conversationWantedMeal(messages) {
     if (m instanceof HumanMessage) {
       const c = String(m.content || '').toLowerCase();
       if (
-        /\b(create|build|generate|make|give me|need a|want a|start a|design)\b/.test(c) &&
+        /\b(create|build|generate|make|give me|need|want|start|design)\b/.test(c) &&
         /\b(meal|nutrition|diet|food|eating|macros?)\b/.test(c)
       ) {
         return true;
@@ -166,7 +189,8 @@ function mealSlotFollowUp(messages, lastUserContent) {
 async function analyzeIntent(state) {
   const llm = getLLM();
   const lastMessage = state.messages[state.messages.length - 1].content;
-  
+  const lastAiMessage = getLastAiContent(state.messages);
+
   const prompt = `
     You are a high-precision fitness data harvester.
     Analyze the current profile and the latest message to perform GAP ANALYSIS for fitness plans.
@@ -175,6 +199,9 @@ async function analyzeIntent(state) {
     - Workout Plan: goal (or goalType), workoutLevel, gymAccess (boolean if they train at home vs gym).
     - Meal Plan: goal, weight, allergies (array or empty string if none).
 
+    CONTEXT:
+    The coach previously asked: "${lastAiMessage}"
+    
     Current User Profile: ${JSON.stringify(state.userProfile)}
     Latest User Message: "${lastMessage}"
 
@@ -211,6 +238,8 @@ async function analyzeIntent(state) {
     if (gymGuess !== undefined) inferredFacts.gymAccess = gymGuess;
     const allergyGuess = inferAllergiesFromShortMessage(lastMessage);
     if (allergyGuess !== undefined) inferredFacts.allergies = allergyGuess;
+    const weightGuess = inferWeightFromMessage(lastMessage, lastAiMessage);
+    if (weightGuess !== undefined) inferredFacts.weight = weightGuess;
 
     const extractedFacts = {
       ...(result.extractedFacts || {}),
@@ -255,7 +284,7 @@ async function analyzeIntent(state) {
       !state.draftMealPlan;
 
     let nextIntent = "chat";
-    if (isSaveRequest) {
+    if (isSaveRequest && !wantsWorkout && !wantsMeal) {
       const isBoth =
         lastMsgLower.includes('both') ||
         lastMsgLower.includes('all plans') ||
@@ -292,6 +321,17 @@ async function analyzeIntent(state) {
       nextIntent = "exec_create_meal";
     } else if (wantsWorkout || wantsMeal) {
       nextIntent = "propose_plan";
+    } else if (isSaveRequest) {
+      // If we are here, it means isSaveRequest is true but wantsWorkout or wantsMeal is ALSO true.
+      // We prioritize creation over saving if nothing exists yet.
+      if (state.draftWorkoutPlan || state.draftMealPlan) {
+          // If something exists, prioritize saving what exists
+          if (state.draftWorkoutPlan && state.draftMealPlan) nextIntent = "exec_save_both";
+          else if (state.draftWorkoutPlan) nextIntent = "exec_save_workout";
+          else nextIntent = "exec_save_meal";
+      } else {
+          // Fallback to creation logic already handled above
+      }
     }
 
     return {
@@ -594,10 +634,13 @@ class JSONDefense {
             // If it ends with a comma inside an object, strip it to prevent empty-entry logic errors
             repaired = repaired.replace(/,\s*$/, "").trim();
             
-            // 3. Handle Unterminated Strings
+            // 3. Handle Unterminated Strings & Partial Values
             // If we have an odd number of quotes, close the last one
             const quoteCount = (repaired.match(/"/g) || []).length;
             if (quoteCount % 2 !== 0) repaired += '"';
+            
+            // Fix partial key-value pairs: "key": } or "key": ] or "key": ,
+            repaired = repaired.replace(/:\s*([}\],])/g, ': null$1');
 
             // 4. Structural Repair (Stack-based)
             const stack = [];
